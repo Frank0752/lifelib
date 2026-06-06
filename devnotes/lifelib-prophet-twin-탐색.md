@@ -488,5 +488,97 @@ ProductID = ("Interface", (".","Enums","ProductID"), "None")  # 자식 인터페
 - [~] HWP 처리: **kordoc 채택 후보**(§18.5). 남은 확인 → 정확성 벤치마크, 오프라인 반입(npm vendoring), 텔레메트리 감사, 수식이 객체/이미지인지(OCR 필요 여부), Markdown provenance 보존도.
 - [ ] 외부 위험률 Excel/DB의 키 체계 = 문서의 위험률명과 어떻게 매칭되나(명명 규칙)?
 - [ ] 유사상품 매칭 기준(상품유형·구조 시그니처) 정의
-- [ ] product-spec IR 스키마 v0 확정 (엔진 IR과의 접합면)
+- [~] product-spec IR 스키마 v0 **초안 작성됨 → §19** (확정은 샘플 검증 후)
 - [ ] 본문 파라미터(예정이율·사업비)의 표기 일관성(상품마다 다른가)
+
+---
+
+## 19. product-spec IR 스키마 v0 (2026-06-05)
+
+파싱 출력 ↔ 엔진 IR 접합면. §18.6을 구체화.
+
+### 설계 원칙
+- **P1 2계층**: `basis`(파라미터=검증가능) vs `structure`/`methodology`(로직=계리검수) — §2/§18.1
+- **P2 모든 leaf = `Field` 래퍼**(value+출처+provenance+confidence+review) — §18.3 검수 front-load
+- **P3 위험률=참조키만**(외부 율표 resolve=강한 게이트) — §18.2(a)
+- **P4 diff-aware**(기준상품+변경목록) — §18.4
+- **P5 engine_mapping**(twin 셀/ref + Prophet 변수) — §7/§13 라운드트립
+- **P6 identity=lifelib 조회키**(Product/PolType/Gen) — 엔진 직결
+
+### 스키마
+```yaml
+product_spec:
+  meta:
+    spec_id; spec_version: "0.1"; created_at
+    source_docs: [{doc_id, type: 산출방법서|약관|사업방법서, hash, parser: kordoc, parser_ver}]
+    diff_mode: full | diff | hybrid          # P4
+    base_product_ref: spec_id | null         # 유사 기준상품
+  identity:                                   # P6 → 엔진 PolicyData/ProductSpec 키
+    product_code: Field<TERM|WL|ENDW|...>; poltype; generation; name; channel
+  structure:                                  # 약관 유래 (검수)
+    terms: {policy_term, prem_term, payment_mode, max_policy_term: Field<...>}
+    benefits:                                 # 지급사유 → 현금흐름 트리거
+      - {benefit_id, trigger: death|maturity|surrender|hospital|...,
+         basis: SA|reserve|premium, timing: BoP|EoP, amount_rule: formula_ref|factor, «meta»}
+    options: [{option_id, kind, params{}, «meta»}]   # 갱신/납입면제/무·저해지
+  basis:                                      # 기초율·가정·산출방식
+    rate_refs:                                # P3 ★참조키만
+      - {role: mort_prem|mort_val|morbidity|lapse_prem|lapse_val,
+         key: Field<"위험률명">, resolved: bool}      # resolved=외부 율표 매칭(게이트)
+    scalar_params:                            # ★본문 값
+      - {name: 예정이율|예정사업비_신계약|해지공제|..., value: Field<number>,
+         unit: rate|amount|per_SA|per_prem|per_pol, basis: prem|val|—}
+    methodology:                              # 산출방식 식별 (검수)
+      premium_method: Field<enum>; reserve_method: Field<순보식|질멜식|현행추정|...>;
+      surrender_method: Field<enum>
+  engine_mapping:                             # P5 (선택)
+    - {path, twin: {space, cell_or_ref}, prophet: {variable, table}}
+  diff:                                       # P4 (diff/hybrid)
+    base_ref; changes: [{path, kind: added|modified|removed, old, new}]
+  validation:                                 # §18.3/18.6 게이트 결과
+    schema_ok; rate_keys_resolved            # ← 강한 게이트
+    cross_doc_consistency: [{check, ok, detail}]
+    arithmetic_checks:    [{check, ok, detail}]   # 사업비 합·해지공제 단조 ...
+    sanity:               [{check, ok, detail}]   # twin profit-test ...
+    review_status: pending|partial|approved
+
+Field<T> = {value: T,
+            src: doc | external | inherited(base) | default,
+            prov: {doc_id, page, section, table, span} | null,   # kordoc MD 보존도 검증대상
+            conf: 0.0~1.0,
+            review: {needs: bool, by, note}}
+```
+
+### 예시 (기존 2세대 → 3세대, diff 모드)
+```yaml
+meta: {spec_id: TERM_무배당_3세대, diff_mode: diff, base_product_ref: TERM_무배당_2세대,
+       source_docs: [{doc_id: D1, type: 산출방법서, parser: kordoc}]}
+identity:
+  product_code: {value: TERM, src: doc, conf: 0.98, prov: {doc_id: D1, page: 1}}
+  generation:   {value: "3",  src: doc, conf: 0.9}
+basis:
+  rate_refs:
+    - role: mort_prem
+      key: {value: "제9회경험생명표_남", src: doc, conf: 0.8, review: {needs: true}}
+      resolved: false                         # 외부 율표 제공 대기
+  scalar_params:
+    - {name: 예정이율, value: {value: 0.025, src: doc, prov: {page: 4, table: T2}, conf: 0.95},
+       unit: rate, basis: prem}
+diff:
+  base_ref: TERM_무배당_2세대
+  changes:
+    - {path: basis.scalar_params.예정이율,    kind: modified, old: 0.0275,    new: 0.025}
+    - {path: basis.rate_refs.mort_prem.key,  kind: modified, old: "제8회...", new: "제9회..."}
+validation: {rate_keys_resolved: false, review_status: pending}
+```
+
+### 보장하는 것
+- 신상품 검증 front-load(§18.3): `conf`/`review`/`validation`으로 검수 지점 즉시 식별
+- 강한 게이트(§18.2): `rate_refs.resolved` + `validation.rate_keys_resolved` = 위험률명↔외부 율표
+- diff 우선(§18.4): `diff.changes` → 엔진 변경 + Prophet 변경명세 직결(§13)
+- 라운드트립(§7/§13): `engine_mapping`이 IR→twin 셀/ref→Prophet 변수 연결
+
+### v0 열린 점
+- `benefits.amount_rule`(공식) 구조화 vs 자유텍스트 깊이 → v0는 느슨(formula_ref+검수), 점진 구조화
+- `engine_mapping`을 IR 내장 vs 별도 매핑테이블 분리 (상품무관 매핑이면 분리가 깔끔)
+- provenance 필드가 kordoc Markdown에서 실제 채워지는 정도 → 샘플 검증 필요
