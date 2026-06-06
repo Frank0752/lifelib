@@ -163,31 +163,59 @@ InputData ──┬─> PolicyAttrs ─┐
 
 ---
 
-## 10. 권장 아키텍처
+## 10. 권장 아키텍처 (통합본, 2026-06-05 갱신)
 
+> 두 파이프라인 **A(twin 구축)** + **B(신상품 모델링)** 통합. 상세는 §15~§19 참조.
+
+### 환경 구분
+- **폐쇄망(CLOSED)**: Prophet 원장(SoR) · 위험률 Excel/DB · 사람 수작업 반영 · 2차검증
+- **인터넷망(OPEN)**: modelx twin · kordoc 파싱 · LLM 자동화 · reconcile/sanity
+- **양망 공통 실행 가능**: kordoc · IR · builtins shim (로컬·오프라인)
+
+### [A] TWIN 구축 — build-time, 기존상품 (1회성)
 ```
-[폐쇄망]  Prophet (원장)
-   │ logic export (.txt, ~3000 vars, 20MB)
-   ▼
-[인터넷]  ① 파서: 변수명·타입·DEFINE·의존성 추출
-   ▼
-        중간표현 (AST / JSON)
-   ▼
-        ② 트랜스파일러: → modelx 셀 코드  (+ Prophet builtins shim)
-   ▼
-        쌍둥이 엔진 (modelx; lifelib 골격 차용, Prophet 동형 구조)
-   ▼
-        ③ reconciliation 하네스: Prophet 변수값과 셀단위 대조
-   ▲────────────────────────────────────────────────┐
-   │ 신상품: 기초서류 파싱(LLM) → 모델링 자동화        │
-   ▼                                                  │
-        변경사항 → "Prophet 변경 명세" 역번역          │
-   ▼                                                  │
-[폐쇄망]  사람이 Prophet에 수작업 반영 → 2차 검증 ──────┘
+[폐쇄망] Prophet ──export(.txt, ~3000var, 20MB)──▶ [인터넷]
+                                                      │
+   ① 파서(변수·타입·DEFINE·의존성)                    ▼
+                                            엔진 IR (AST/JSON, §15)
+                                                      │
+   ② 트랜스파일러 + builtins shim(§18 의미론)          ▼
+                                            modelx twin (§16/§17, lifelib 골격 차용)
+                                                      │
+[폐쇄망] Prophet golden 값 ──▶ ③ reconcile(셀단위, 상대오차+materiality §8-3)
+                                                      │ 통과
+                                                      ▼
+                              ★ TWIN = Prophet 동형 미러 (§7)  ← B의 기반
 ```
 
-- 차용: 입력처리·PV·투영 골격, modelx 사용 패턴
-- 신규 IP: Prophet 파서 + 트랜스파일러 + builtins 런타임 + reconciliation/round-trip 하네스
+### [B] 신상품 모델링 — run-time, 상품마다 반복
+```
+[폐쇄망/인터넷] HWP 기초서류
+        │ ④ kordoc → Markdown (§18.5, 로컬)
+        ▼ ⑤ 구조화 추출(규칙+LLM, diff/extract §18.4)
+   product-spec IR (§19)  ◀──(위험률명↔키 매칭, 강한 게이트)── 위험률 Excel/DB(사용자제공)
+        │ engine_mapping (§19/§7)
+        ▼
+   ⑥ TWIN에 상품 모델링 적용 → twin sanity(profit-test·민감도)
+        │   ※ 신상품은 Prophet 골든 없음 → 앞단 검증 front-load (§18.3)
+        ▼
+   ⑦ 변경 diff → "Prophet 변경명세" (§13)
+        │ [인터넷 → 폐쇄망 반출]
+        ▼
+[폐쇄망] ⑧ 사람이 Prophet 수작업 반영 → ⑨ 2차검증
+        │ (불일치 → ⑤로 피드백 루프)
+        ▼
+   Prophet 원장 업데이트 ✓
+```
+
+### 차용 vs 신규 IP
+- **차용**: modelx 엔진 + lifelib 입력처리·PV·투영 골격 / kordoc(파싱 프런트엔드)
+- **신규 IP**: Prophet 파서·트랜스파일러·builtins 런타임 · reconciliation/round-trip 하네스 · 구조화추출→product-spec IR · engine_mapping
+
+### 접합점 (두 파이프라인이 만나는 곳)
+- **B가 A의 산출물(twin) 위에서 동작**: ⑥은 ③에서 검증된 twin을 수정.
+- **engine_mapping(§19)** = product-spec IR ↔ 엔진 IR(§15) ↔ Prophet 변수의 3자 연결.
+- **위험률 Excel/DB** = A의 twin InputData와 B의 IR resolve가 공유하는 외부 데이터.
 
 ---
 
