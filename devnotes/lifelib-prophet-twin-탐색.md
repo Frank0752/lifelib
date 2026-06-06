@@ -443,11 +443,27 @@ ProductID = ("Interface", (".","Enums","ProductID"), "None")  # 자식 인터페
 - 신규구조 → **extract 모드**(백지 추출, 계리검수·twin sanity 강화).
 - 한 상품 안에서도 **컴포넌트 단위로 혼용**(대부분 변형 + 일부 새 옵션).
 
-### 18.5 HWP 처리 전략
-- **권장 1단계: HWP → HWPX(OWPML) 변환.** HWPX는 zip+XML(docx류)이라 **표·문단·수식 객체가 결정론적으로 추출**됨. 한글 수식편집기 객체는 HWPX에 **스크립트로 저장 → 텍스트 추출 가능**(이미지 OCR 회피).
-- 보조: 구 binary HWP는 `pyhwp/hwp5`로 텍스트/XML화. 한컴 자동화/LibreOffice headless 변환은 복잡 문서에서 불안정.
-- ⚠️ 수식이 **편집기 객체가 아니라 캡처 이미지**면 OCR 필요 → 샘플로 확인.
-- ⚠️ 거버넌스(§8-4): 문서가 폐쇄망 출처 → **변환을 어디서(폐쇄망 내 변환 후 hwpx만 반출 vs 인터넷)** 결정 필요.
+### 18.5 HWP 처리 전략 — kordoc 채택 검토 (업데이트 2026-06-05)
+
+**도구: [chrisryugj/kordoc](https://github.com/chrisryugj/kordoc)** (사용자 발견, 산출방법서 1건 파싱 성공 — 정확성 미검증).
+- MIT, **Node.js 18+**(TS). HWP3·HWP5·HWPX·HWPML·PDF·XLS·XLSX·DOCX **→ Markdown** 통합. 병합셀·누락선 표 복원. library/CLI/MCP 3인터페이스.
+- **코어 파싱 완전 로컬·오프라인**(필수 외부 API 없음). 의존성 전부 로컬(`pdfjs-dist`/`cfb`=HWP5 OLE/`JSZip`=HWPX/`rhwp` 내부포트). **한글 설치 불필요.**
+
+**함의 (설계 변경):**
+- ★ **HWP 직접 파싱** → 기존 "HWP→HWPX 변환 1단계" **불필요해질 수 있음.**
+- ★ 모든 포맷 → **Markdown 정규화** → 포맷 이질성 해소, 파서 뒷단을 단일 입력으로.
+- ★ **폐쇄망·인터넷 동일 도구** 사용 가능(코어 로컬·MIT).
+
+**Caveat (폐쇄망/거버넌스):**
+1. **오프라인 설치**: npm 설치는 인터넷 필요 → `npm pack`/오프라인 미러로 패키지+node_modules 반입(설치 후 오프라인 실행).
+2. **OCR은 선택·외부연동 가능** → 캡처 이미지 수식이면 **로컬 OCR 연결 또는 경로 제외**.
+3. **MCP(LLM연동) 인터페이스는 폐쇄망 미사용** → library/CLI만(파싱 자체 LLM 불필요).
+4. **텔레메트리 무전송 명시 없음** → 반입 전 **코드/네트워크 감사**(아웃바운드 호출 없음 확인).
+5. **정확성 미검증 + 신생·1인 저자** → 파이프라인 최전단이라 오류 전파 → **알려진 문서로 정확성 벤치마크** 필수.
+
+**출력 형태 주의**: kordoc 출력은 **Markdown**(rich XML AST 아님). 표·텍스트는 양호하나 **provenance(페이지·셀 좌표)** 메타는 약할 수 있음 → "kordoc(MD) → 구조화 추출(규칙+LLM) → product-spec IR" 단계로 두고 provenance 보존도 검증.
+
+**보조/대안**: `pyhwp`(HWP5, Python), `rhwp`/`rhwp-python`(Rust+PyO3, HWP/HWPX), `openhwp` — kordoc 정확성·유지보수 리스크 대비 백업 후보.
 
 ### 18.6 product-spec IR (엔진 IR과 연결되는 상품 레이어)
 목표 = "문서→완성모델" 자율화가 **아니라** "문서→**사람 검토 가능한 구조화 스펙**".
@@ -456,8 +472,8 @@ ProductID = ("Interface", (".","Enums","ProductID"), "None")  # 자식 인터페
 - diff 메타: 기준상품 + 변경필드 목록.
 
 ### 18.7 파이프라인/서브에이전트 (§13 게이트 적용)
-1. HWP→HWPX 변환 (결정론)
-2. 구조 추출: 문단/표/수식 (결정론 파서)
+1. kordoc: HWP/HWPX/PDF → **Markdown** 정규화 (결정론, 로컬·오프라인)
+2. 구조 추출: Markdown의 표/문단/수식 → 구조화 (규칙 + LLM)
 3. 상품 분류 · 유사상품 매칭 (검색/에이전트)
 4. diff/extract 추출 — **컴포넌트별 fan-out** (LLM 에이전트)
 5. 소스 resolution(문서값 + 외부 율키 + diff기준) → product-spec IR
@@ -469,7 +485,7 @@ ProductID = ("Interface", (".","Enums","ProductID"), "None")  # 자식 인터페
 - 서술→의미: LLM 강점(약관 지급사유→트리거, 산문 공식→수식 후보).
 
 ### 18.9 Open Questions
-- [ ] HWP→HWPX 일괄 변환이 (폐쇄망/인터넷 중 어디서) 가능한가? 수식이 객체인가 이미지인가?
+- [~] HWP 처리: **kordoc 채택 후보**(§18.5). 남은 확인 → 정확성 벤치마크, 오프라인 반입(npm vendoring), 텔레메트리 감사, 수식이 객체/이미지인지(OCR 필요 여부), Markdown provenance 보존도.
 - [ ] 외부 위험률 Excel/DB의 키 체계 = 문서의 위험률명과 어떻게 매칭되나(명명 규칙)?
 - [ ] 유사상품 매칭 기준(상품유형·구조 시그니처) 정의
 - [ ] product-spec IR 스키마 v0 확정 (엔진 IR과의 접합면)
