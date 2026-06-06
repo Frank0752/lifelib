@@ -293,25 +293,55 @@ twin wall-clock ≠ Prophet 프로파일(C++·멀티스레드 vs Python·재귀�
 
 ---
 
-## 14. 다음 단계 — PoC 플랜 (탐색→파일럿)
+## 14. PoC 플랜 — 두 파이프라인 통합본 (2026-06-05 재정비)
 
-1. **파일럿 1상품 선정**: 가장 단순한 정기보험류. 전체 3000변수 말고 의존 서브셋만.
-2. **Prophet export 파서**: 변수·타입·DEFINE·의존성 추출 → 의존 그래프 시각화.
-3. **builtins shim 최소셋** 구현 + 서브셋 트랜스파일 → modelx 셀.
-4. **reconciliation**: 동일 모델포인트로 셀단위 대조, 원단위 일치까지.
-5. **round-trip 닫힘 확인**: "엔진 변경 → Prophet 명세" 역번역을 끝까지 1회 — **이게 PoC 진짜 성공 기준.**
+§10의 A(twin 구축)·B(신상품 모델링)를 단계로 풀고, A·B는 **파싱까지 병렬**, **통합은 A의 twin에 의존**.
 
-### 다음 대화에서 정할 것 (Open Questions)
-- [ ] 파일럿 대상 상품/Run 선정
-- [ ] Prophet export 포맷 실제 샘플 확인 → 트랜스파일 난이도·견적
-- [ ] builtins/관례 목록 1차 인벤토리 (타이밍·보간·반올림·Run 분기…)
-- [x] reconciliation 허용오차: **bit 일치 비목표, 상대오차+materiality 기반** (§8-3). 항목별 임계치·sign-off 기준은 PoC에서 구체화.
+### 이미 완료 (de-risked)
+- ✅ §16 modelx 가정검증(의존성 그래프·직렬화·nomx·성능)
+- ✅ §17 트랜스파일 타겟 해부(API 구동 경로 검증)
+- ✅ kordoc 산출방법서 1건 파싱 성공(정확성 미검증)
+
+### Phase 0 — 입력 확보 & 사전점검 (블로커 해소)
+- [ ] **Prophet export 샘플**(1상품 의존 서브셋, 민감정보 제거) ← A 임계입력
+- [ ] **HWP 산출방법서 샘플 + 외부 위험률표 샘플** ← B 임계입력 (산출방법서는 보유)
+- [ ] kordoc: 오프라인 반입(npm vendoring) · 텔레메트리 감사 · **정확성 벤치마크**(§18.5)
+- [ ] 거버넌스/라이선스(Prophet 재구현·문서/위험률 반출 §8-4)
+
+### Phase 1 — 파이프라인 A PoC (twin 구축, 1상품)  ※ B 파싱과 병렬 가능
+1. 파일럿 **1상품 선정**(가장 단순 정기류), 의존 변수 **서브셋만**(3000 전체 ✗)
+2. **Prophet export 파서** → 엔진 IR(§15), 의존 그래프 시각화
+3. **builtins shim 최소셋** + 서브셋 트랜스파일 → modelx twin (§17 API 경로)
+4. **reconcile**: 동일 MP 셀단위 대조, **상대오차+materiality 통과**(§8-3)
+   - ✔ 성공기준: 대표 MP에서 허용오차 내 일치
+5. **round-trip 닫힘**: twin 변경 → "Prophet 변경명세" 역번역 1회 (§13)
+
+### Phase 2 — 파이프라인 B PoC (신상품 모델링, 기초서류 1건)  ※ 1~3은 A와 병렬, 4는 Phase1 twin 필요
+1. kordoc: 산출방법서 → Markdown + **정확성 벤치마크**(알려진 값 대조)
+2. 구조화 추출(규칙+LLM) → **product-spec IR v0**(§19), **diff 모드 우선**(유사 기존상품 대비, §18.4)
+3. **위험률명 ↔ 외부 율표 키 매칭**(강한 게이트) 통과 + provenance/confidence 채움 확인
+   - ✔ 성공기준: IR이 **사람 검수 가능 형태**로 생성 + 강게이트 통과
+4. *(통합 진입)* IR → `engine_mapping` → Phase1 twin에 신상품 적용
+
+### Phase 3 — 통합 round-trip (A+B 폐루프)
+1. twin에 신상품 모델링 반영 → **twin sanity**(profit-test·민감도; Prophet 골든 없음 §18.3)
+2. 변경 diff → Prophet 변경명세 → (모의) 사람 반영 → 2차검증 흐름 확인
+   - ★ **PoC 최종 성공기준**: 기초서류 1건이 **product-spec IR → twin 모델 변경 → Prophet 변경명세**까지 자동 수준으로 흐르고, A의 round-trip과 합쳐져 **§10 폐루프가 1회 닫힘**
+
+### 임계경로 / 블로커
+- **A 임계입력 = Prophet 샘플**(사용자 추후 제공) → Phase 1 착수 게이트
+- **B 임계입력 = HWP 샘플(보유)+외부 율표+kordoc 검증** → Phase 2는 먼저 시작 가능
+- 통합(Phase 3)은 Phase 1 twin 존재가 전제
+- **오케스트레이션은 나중**(§13): PoC는 1상품·순차·수작업 위주, fan-out/자동화는 가치 입증 후
+
+### Open Questions
+- [ ] 파일럿 대상 상품/Run 선정 (A·B 동일 상품으로 맞추면 통합 PoC 수월)
+- [ ] Prophet export 포맷 실제 샘플 → 트랜스파일 난이도·견적
+- [ ] builtins/관례 1차 인벤토리 (타이밍·보간·반올림·Run 분기…)
+- [x] reconciliation 허용오차: **bit 비목표, 상대오차+materiality** (§8-3). 항목별 임계치·sign-off는 PoC에서 구체화.
+- [ ] 외부 위험률표 키 체계 ↔ 문서 위험률명 매칭 규칙 (§18.9)
 - [ ] 거버넌스/라이선스 사전 확인 결과
 - [ ] 엔진 버전 ↔ Prophet 버전 페어링·회귀검증 운영 방식
-
-### 가장 값진 한 걸음
-**Prophet export txt의 변수 정의 샘플 1~2개**(민감정보 제거)를 확보하면:
-① modelx 셀 변환이 얼마나 기계적인지, ② 어떤 빌트인/관례를 shim으로 분리해야 하는지를 실제 코드로 매핑 가능 → 트랜스파일러 견적·PoC 범위 확정.
 
 ---
 
