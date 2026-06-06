@@ -148,6 +148,7 @@ InputData ──┬─> PolicyAttrs ─┐
 1. **쌍둥이 표류(drift)**: Prophet 업데이트 시 자동 동기화 안 됨 → **버전 페어링 + 정기 재검증** 규율 필수. 엔진을 Prophet 버전에 태깅하고 회귀검증 결합.
 2. **의미론 충실도**: 값 차이는 공식보다 빌트인·관례(타이밍/보간/반올림/t=0/Run)에서 발생 → **builtins shim**으로 일원화.
 3. **검증 정의**: "동일 값"의 허용오차·대상 출력·sign-off 기준을 상품별로 명문화. 2차 검증 매치 기준도 정의.
+   - **[결정 2026-06-05] 허용오차 정책**: **bit 단위(부동소수점) 일치는 비목표.** Prophet(C++)과 Python은 연산순서·초월함수 구현이 달라 끝자리가 갈리는 게 정상. → **상대오차 + 중요성(materiality) 임계치** 기반으로 판정(예: 항목별 상대오차 < 1e-6, 절대금액이 무의미하게 작은 셀은 면제). 절대오차 단독은 금액 스케일 차이로 부적합. 출력 항목별 차등 기준 허용(보험료=빡빡, 먼 미래 CF=느슨).
 4. **거버넌스/라이선스** (착수 전 확인):
    - FIS Prophet 로직 외부 재구현이 라이선스 약관에 저촉되는지.
    - 회사 계리로직·기초서류를 인터넷 환경 반출하는 게 정보보안/규제(기밀·개인정보)상 허용되는지.
@@ -276,7 +277,7 @@ twin wall-clock ≠ Prophet 프로파일(C++·멀티스레드 vs Python·재귀�
 - [ ] 파일럿 대상 상품/Run 선정
 - [ ] Prophet export 포맷 실제 샘플 확인 → 트랜스파일 난이도·견적
 - [ ] builtins/관례 목록 1차 인벤토리 (타이밍·보간·반올림·Run 분기…)
-- [ ] reconciliation 허용오차 및 sign-off 기준 정의
+- [x] reconciliation 허용오차: **bit 일치 비목표, 상대오차+materiality 기반** (§8-3). 항목별 임계치·sign-off 기준은 PoC에서 구체화.
 - [ ] 거버넌스/라이선스 사전 확인 결과
 - [ ] 엔진 버전 ↔ Prophet 버전 페어링·회귀검증 운영 방식
 
@@ -325,3 +326,31 @@ Prophet export → [내 IR/AST: 소유] → 백엔드: modelx 코드 생성 (지
 
 ### 선행조건
 **Prophet export 실제 샘플 → modelx 매핑 검증**이 이 ADR 확정의 전제(§14 "가장 값진 한 걸음"과 동일).
+
+---
+
+## 16. 가정검증 실측 결과 (2026-06-05, modelx 0.31.1 / TradLife_A)
+
+이 환경에서 modelx+deps 설치 후 `annuallife/TradLife_A`로 §11·§12·§13·§15 가정을 실측. **모두 가정대로 확인됨.**
+
+### 환경
+- `pip install modelx pandas openpyxl networkx` → modelx **0.31.1**, pandas 3.0.3, networkx 3.6.1. (modelx가 pandas를 강제의존하지 않아 별도 설치 필요.)
+- modelx/lifelib 둘 다 순수 Python으로 설치·실행됨(컴파일·GPU 불필요).
+
+### 결과
+| 가정 | 결과 | 비고 |
+|---|---|---|
+| 모델 읽기 | ✅ 0.5s | `read_model("TradLife_A")` |
+| 계산 + **메모이즈** | ✅ | `pv_net_cf(0)=8954.0183`; cold 0.35s → **cached 46µs**(≈7500배) |
+| **의존성 그래프 API** (§12·§13) | ✅ | `node.preds/succs`(런타임, 값캐시 필요) + `node.precedents`(정적) |
+| **networkx 추출** | ✅ | pv_net_cf(0) 도달 노드 **1,813 / 엣지 3,404, DAG=True**(순환 없음) |
+| **fan-out 핫스팟 분석** | ✅ | `disc()` 161곳, `mortality_rates()` 110곳 참조 → 최적화 핫스팟 식별 실현성 입증 |
+| **직렬화 라운드트립** (§15) | ✅ | `write_model→read_model` 후 값 **완전 동일**(`identical=True`). 단 `input.xlsx`(데이터)는 모델 외부라 동반 필요 |
+| **nomx export** (§11·§15) | ✅ | 순수 Python 패키지로 export, **modelx 없이 실행해도 값 동일** → 이식성·lock-in 약함 실증 |
+| **성능 감** (§11) | ✅ | 300 MP **스칼라 방식** cold 런 **20.0s = 66.8ms/MP** |
+
+### 함의 (계획 업데이트)
+- **§12·§13 핵심 가정 입증**: 의존성 그래프가 실제로 쿼리·networkx화 가능 → 최적화 분석·셀단위 reconciliation 토대 확실. (`preds`는 **값이 캐시된 뒤**라야 조회됨 = 런타임 실제 의존; 정적 의존은 `precedents`.)
+- **§15 ADR 보강**: 텍스트 직렬화 라운드트립 무손실 + nomx 이식성 확인 → "엔진은 빌리되 lock-in 약함" 실증. **modelx 차용으로 PoC 시작 결정의 신뢰도↑.**
+- **§11 성능 확증**: 스칼라 방식 ~67ms/MP는 twin PoC(대표 MP 수십~수백 건)엔 충분. **대량(수만~수십만 MP)이면 벡터화(_M)·nomx·cluster 필요** — GPU 아님.
+- **주의(검증 절차)**: 직렬화/nomx 모델은 `input.xlsx`를 모델 경로 기준으로 읽음 → reconciliation 하네스에서 **데이터 파일 동반·경로 관리**를 절차에 포함해야 함.
