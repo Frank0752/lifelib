@@ -354,3 +354,55 @@ Prophet export → [내 IR/AST: 소유] → 백엔드: modelx 코드 생성 (지
 - **§15 ADR 보강**: 텍스트 직렬화 라운드트립 무손실 + nomx 이식성 확인 → "엔진은 빌리되 lock-in 약함" 실증. **modelx 차용으로 PoC 시작 결정의 신뢰도↑.**
 - **§11 성능 확증**: 스칼라 방식 ~67ms/MP는 twin PoC(대표 MP 수십~수백 건)엔 충분. **대량(수만~수십만 MP)이면 벡터화(_M)·nomx·cluster 필요** — GPU 아님.
 - **주의(검증 절차)**: 직렬화/nomx 모델은 `input.xlsx`를 모델 경로 기준으로 읽음 → reconciliation 하네스에서 **데이터 파일 동반·경로 관리**를 절차에 포함해야 함.
+
+---
+
+## 17. 트랜스파일 타겟 포맷 해부 (2026-06-05)
+
+modelx 직렬화 포맷을 트랜스파일러 출력 타겟으로 쓸 수 있는지 실측 해부. **결론: 매우 단순·규칙적인 타겟. 저위험.**
+
+### 디스크 포맷 구조
+- **모델 = 디렉토리**, **스페이스 = 하위 디렉토리 + `__init__.py`**, 자식 스페이스 = 중첩 디렉토리.
+- `_system.json`: `{"modelx_version":[0,30,1], "serializer_version":7}` — **버전 스탬프**(§15 버전 핀과 연결, 트랜스파일러는 고정 버전 타겟).
+- 데이터(DataFrame 등)는 스페이스의 `_data/`에 피클로 저장(있을 때만). **TradLife_A는 런타임에 `input.xlsx`를 읽어 `_data` 없음.**
+
+### 스페이스 `__init__.py` 스키마 (고정 틀)
+```python
+"""docstring → 스페이스 문서"""
+from modelx.serialize.jsonvalues import *
+_formula = lambda idx, scen_id=1: None   # 파라미터화(없으면 None)
+_bases = [".BaseProj", ".PV"]            # 상속(.=형제 스페이스 경로)
+_allow_none = None
+_spaces = []                             # 자식 스페이스명
+# --- Cells ---
+def cell_name(t):                        # 셀 = 평범한 def(=수식). docstring 선택
+    return ...
+# --- References ---
+scalar_ref = 0.05                        # 스칼라 참조
+M = 1                                    # (enum 멤버도 동일)
+input_data = ("Interface", ("..","InputData"), "auto")   # 스페이스→스페이스
+pd = ("Module", "pandas")                                # 모듈
+ProductID = ("Interface", (".","Enums","ProductID"), "None")  # 자식 인터페이스
+```
+→ 즉 **셀 1개 = `def` 1개**. Prophet 변수 DEFINE이 그대로 여기로 떨어짐.
+
+### 두 가지 출력 경로 — 둘 다 실측 검증됨
+- **(A) 텍스트 파일 직접 생성**: 위 스키마는 사실상 템플릿(헤더 상수 + `def` 블록 + 참조 라인). 기계적.
+- **(B) modelx API 구동 후 `write_model`** ⭐ 권장:
+  `new_model → new_space(bases=[...]) → new_cells(name, formula="def f(t): ...") → 스칼라/Interface 참조 주입 → space.formula로 파라미터화`.
+  - 실측: 문자열 수식(재귀 포함)·상속·파라미터화·스페이스간 참조 모두 조립 성공 → `write_model`→`read_model` **값 완전 동일**.
+  - 장점: modelx가 **수식 검증·의존성 그래프 구성을 공짜로** 해줌, 텍스트 따옴표/이스케이프 함정 회피.
+
+### 트랜스파일러 설계 함의 (→ §15 IR 백엔드)
+- **IR → 백엔드(B: API 구동)** 가 정석. (A 텍스트는 디버그/검수용 뷰.)
+- 매핑 이음새:
+  | Prophet | modelx |
+  |---|---|
+  | 변수 DEFINE | `new_cells(formula="def 변수(t): ...")` |
+  | t 루프 | 셀 `(t)` 파라미터 + 재귀 (네이티브) |
+  | GLOBAL/파라미터 | 스칼라 참조 또는 Globals 스페이스 |
+  | 테이블 | `_data` DataFrame 또는 input 읽는 셀 |
+  | 상품/structure | 스페이스 + 상속(`_bases`) |
+  | 빌트인 함수 | **shim 라이브러리를 모듈/함수 참조로 주입** |
+- **이름 보존**: Prophet 변수명을 셀명으로 그대로 → §7 동형 미러 직접 지원.
+- ⚠️ **주의**: modelx 셀명은 **유효한 Python 식별자**여야 함. Prophet 변수명에 비식별자 문자가 있으면 sanitize 필요 + **이름맵 보관**(§13 역번역용).
